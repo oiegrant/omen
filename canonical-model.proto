@@ -1,0 +1,138 @@
+syntax = "proto3";
+
+package prediction_market;
+
+import "google/protobuf/timestamp.proto";
+
+// -------------------------
+// Event Messages
+// -------------------------
+message Event {
+  string event_id = 1;
+  string event_name = 2;
+  string event_description = 3;
+  string event_type = 4; // binary, categorical, scalar
+  string event_category = 5;
+  repeated string event_tags = 6;
+  google.protobuf.Timestamp start_date = 7;
+  google.protobuf.Timestamp expiry_date = 8;
+  string resolution_source = 9;
+}
+
+message EventResolved {
+  string event_id = 1;
+  string resolved_outcome_id = 2;
+  double payout_value = 3;
+  google.protobuf.Timestamp resolution_time = 4;
+  string resolution_source = 5;
+  enum FinalityStatus {
+    TENTATIVE = 0;
+    FINAL = 1;
+    DISPUTED = 2;
+  }
+  FinalityStatus finality_status = 6;
+}
+
+// -------------------------
+// Market Messages
+// -------------------------
+message Market {
+  string market_id = 1;
+  string event_id = 2;
+  string venue_id = 3;
+  string market_description = 4;
+  string market_type = 5; // binary, categorical, scalar
+  google.protobuf.Timestamp open_time = 6;
+  google.protobuf.Timestamp close_time = 7;
+  string settlement_rule = 8;
+  string initial_state = 9;
+}
+
+message MarketUpdated {
+  string market_id = 1;
+  string market_description = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message MarketStateUpdated {
+  string market_id = 1;
+  enum MarketState {
+    PRE_OPEN = 0;
+    OPEN = 1;
+    HALTED = 2;
+    RESOLVED = 3;
+    DISPUTED = 4;
+  }
+  MarketState previous_state = 2;
+  MarketState new_state = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  string reason = 5;
+}
+
+message MarketResolved {
+  string market_id = 1;
+  string resolved_outcome_id = 2;
+  double payout_value = 3;
+  google.protobuf.Timestamp resolution_time = 4;
+  double confidence_level = 5;
+}
+
+// -------------------------
+// Outcome Messages
+// -------------------------
+message Outcome {
+  string outcome_id = 1;
+  string outcome_name = 2;
+  string market_id = 3;
+  double payout_rule = 4;
+  string token_id = 5;
+  string clob_token_id = 6;
+}
+
+// -------------------------
+// Order / Trade Messages
+// -------------------------
+message Order {
+  string order_id = 1;
+  string market_id = 2;
+  string outcome_id = 3;
+  enum Side {
+    BID = 0;
+    ASK = 1;
+  }
+  Side side = 4;
+  double price = 5;
+  double quantity = 6;
+  enum Status {
+    OPEN = 0;
+    FILLED = 1;
+    PARTIAL = 2;
+    CLOSED = 3;
+  }
+  Status status = 7;
+  google.protobuf.Timestamp timestamp = 8;
+  string venue_order_id = 9;
+}
+
+message Trade {
+  string trade_id = 1;
+  string market_id = 2;
+  string outcome_id = 3;
+  double price = 4;
+  double quantity = 5;
+  string maker_order_id = 6;
+  string taker_order_id = 7;
+  google.protobuf.Timestamp timestamp = 8;
+}
+
+// -------------------------
+// Venue Messages
+// -------------------------
+message Venue {
+  string venue_id = 1;
+  string name = 2;
+  string venue_type = 3; // CLOB, AMM, hybrid
+  string currency = 4;
+  double price_scale = 5;
+  string timezone = 6;
+}
