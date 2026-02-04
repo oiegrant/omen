@@ -1,0 +1,39 @@
+
+//Fetch all events for a market
+//Normalize events (structs)
+//reconcile to the DB (updates/writes)
+//  INSERT INTO events (
+//   event_id,
+//   venue,
+//   venue_event_id,
+//   name,
+//   expiry_date,
+//   active,
+//   first_seen_at,
+//   last_seen_at
+// )
+// VALUES (...)
+// ON CONFLICT (venue, venue_event_id)
+// DO UPDATE SET
+//   name = EXCLUDED.name,
+//   expiry_date = EXCLUDED.expiry_date,
+//   last_seen_at = NOW(),
+//   active = true;
+
+// expired/closed/resolved markets are never deleted - just status marked
+
+//Diff Engine
+//  detect new events (last_updated vs now timestamps) -> events.discovered
+//  detect new markets -> markets.discovered
+//  detect expired/not present/resolved -> events/markets.resolved
+
+discovery/
+    polymarket-ingestor
+        -> this is the rest api event/market
+        -> reads snapshot from api
+        -> creates intermediate structs
+        -> writes structs to db
+subscriptions/
+    websocket-manager
+stream/
+    streamer

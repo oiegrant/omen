@@ -1,0 +1,2 @@
+Get all data for a specific event
+curl "https://gamma-api.polymarket.com/events?active=true&closed=false&id=33507"
