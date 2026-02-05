@@ -1,7 +1,9 @@
 const std = @import("std");
 const print = std.debug.print;
 const http = std.http;
-pub const constants = @import("consts.zig");
+const constants = @import("consts.zig");
+const canon = @import("data/canonical-entities.zig");
+const ArrayList = std.ArrayList;
 
 const ParsedPolymarketMarket = struct {
     id: []u8 = "",
@@ -46,42 +48,9 @@ const ParsedPolymarketEvent = struct {
     negRiskMarketID: []u8 = "",
 };
 
-// message Market {
-//   string market_type = 5; // binary, categorical, scalar
-//   string settlement_rule = 8;
-//   string initial_state = 9;
-// }
-
-// message MarketUpdated {
-//   string market_id = 1;
-//   string market_description = 2;
-//   google.protobuf.Timestamp updated_at = 3;
-// }
-
-// message MarketStateUpdated {
-//   string market_id = 1;
-//   enum MarketState {
-//     PRE_OPEN = 0;
-//     OPEN = 1;
-//     HALTED = 2;
-//     RESOLVED = 3;
-//     DISPUTED = 4;
-//   }
-//   MarketState previous_state = 2;
-//   MarketState new_state = 3;
-//   google.protobuf.Timestamp timestamp = 4;
-//   string reason = 5;
-// }
-
-// message MarketResolved {
-//   string market_id = 1;
-//   string resolved_outcome_id = 2;
-//   double payout_value = 3;
-//   google.protobuf.Timestamp resolution_time = 4;
-//   double confidence_level = 5;
-// }
-
 const ParsedEvents = []ParsedPolymarketEvent;
+
+const EVENTS_PER_CALL = 100;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -110,4 +79,73 @@ pub fn main() !void {
 
     const events: std.json.Parsed(ParsedEvents) = try std.json.parseFromSlice(ParsedEvents, gpa.allocator(), sliced_body, .{ .ignore_unknown_fields = true });
     defer events.deinit();
+
+    var canonical_events = try ArrayList(canon.CanonicalEvent).initCapacity(gpa.allocator(), EVENTS_PER_CALL);
+    defer canonical_events.deinit(gpa.allocator());
+
+    var canonical_markets = try ArrayList(canon.CanonicalMarket).initCapacity(gpa.allocator(), EVENTS_PER_CALL);
+    defer canonical_markets.deinit(gpa.allocator());
+
+    //get polymarket event id and check for existance in db
+    // SELECT event_id
+    // FROM events
+    // WHERE venue = "polymarket" AND venue_event_id = ?
+    //
+    // If already exists -> diff canonical fields
+    //
+    // If doesn't exist ->
+    //
+
+    for (events.value) |event| {
+
+        const markets = event.markets;
+        const tags = event.tags;
+        const venue_event_id = try std.fmt.parseInt(u64, event.id, 10);
+
+        const tag_arr = try gpa.allocator().alloc([]const u8, tags.len);
+        defer gpa.allocator().free(tag_arr);
+        for (tags, 0..) |tag, i| {
+            tag_arr[i] = tag.label;
+        }
+
+
+        for (markets) |market| {
+
+
+
+            const temp_market: canon.CanonicalMarket = canon.CanonicalMarket {
+                .venue_market_id =
+                .event_id = ,
+                .market_id = ,
+                .market_description = ,
+                .start_date = ,
+                .expiry_date = ,
+                .market_status = ,
+                .market_type = ,
+                .outcomes = ,
+            }
+        }
+
+        const temp_event: canon.CanonicalEvent = canon.CanonicalEvent{
+            .venue_id = canon.VenueID.POLYMARKET,
+            .venue_event_id = venue_event_id,
+            .event_id = 123,
+            .event_name = "name",
+            .event_description = "desc",
+            .event_type = canon.EventType.BINARY,
+            .event_category = "cat",
+            .event_tags = tag_arr,
+            .start_date = 45678,
+            .expiry_date = 98765,
+            .event_status = canon.EventStatus.ACTIVE,
+        };
+
+        try canonical_events.append(gpa.allocator(), temp_event);
+    }
+
+    for (canonical_events.items) |cevent| {
+        print("{}\n", .{cevent.event_id});
+    }
 }
+
+pub fn

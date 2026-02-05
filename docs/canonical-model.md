@@ -8,6 +8,8 @@ Derived metrics (change constantly, computed, recomputable)
 
 ### All timestamps are in ms UTC
 
+### unique internal ids are Snowflake-style u64 IDs : bit pattern : 41bits timestamp |10 bits sourceid | 12 bits sequence
+
 # Entities
 ## Entity Descriptions
   - Venue
@@ -35,81 +37,6 @@ Derived metrics (change constantly, computed, recomputable)
     - venue-specific semantics wrapper
   - CLOB
     - derived - snapshot + deltas
+
 ## Entity Fields
-
-  see 
-  - Venue
-    - venue_id
-    - price_scale ($0-$1, 0-100 cents)
-    - currency / underlying token (USDC)
-    - venue_type
-    
-  - Event
-    - venue_id
-    - event_id
-    - event_name
-    - event_description
-    - event_type (binary, categorical)
-    - event_category (sports, politics)
-    - event_tags (bitcoin, trump, minnesota wild, etc.)
-    - resolution_source
-    - start_date
-    - expiry_date
-    - status (active/pending_resolution/resolved/cancelled)
-  
-  - Market
-    - event_id
-    - market_id
-    - market_description
-    - market_type (binary)
-    - status (active/pending_resolution/resolved/cancelled/disputed)
-      - This needs a seperate status since a categorical market can resolve while its parent remains tradeable
-    - MarketState (enum)
-      - PRE_OPEN
-      - OPEN
-      - HALTED
-      - RESOLVED
-      - DISPUTED
-
-  - Outcome
-    - market_id
-    - outcome_id
-    - outcome_name (YES/NO)
-    - token_id
-    - clob_token_id
-  
-  - Order
-    - order_id
-    - market_id
-    - outcome_id
-    - side (bid/ask)
-    - price
-    - quantity
-    - status (open/filled/partial/closed)
-    - timestamp
-  
-  - Trade
-    - outcome_id
-    - trade_id
-    - market_id
-    - price
-    - quantity
-    - maker_order_id
-    - taker_order_id
-    - timestamp
-  
-  - Resolution
-    - outcome_id
-    - resolution_id
-    - event_id
-    - market_id
-    - resolution_time
-    - resolved_value
-    - source
-  
-  - MarketState (enum)
-    - PRE_OPEN
-    - OPEN
-    - HALTED
-    - RESOLVED
-    - DISPUTED
+  Final entity fields defined in canonical-entities.zig
