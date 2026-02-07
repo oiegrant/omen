@@ -6,7 +6,7 @@ pub const log = std.log.scoped(.example);
 
 pub const CanonicalDB = struct {
     allocator: std.mem.Allocator,
-    pool: pg.Pool,
+    pool: *pg.Pool,
 
     pub fn init(allocator: std.mem.Allocator, config: configs.CanonicalDBConfig) !CanonicalDB {
         const pool = pg.Pool.init(allocator, .{ .size = config.pool_size, .connect = .{
@@ -46,7 +46,7 @@ pub const CanonicalDB = struct {
     pub fn queryForResultAllocated(self: *CanonicalDB, allocator: std.mem.Allocator, query_string: []const u8) !*pg.Result {
         var conn = try self.pool.acquire();
         defer conn.release();
-        return try pg.conn.queryOpts("{}", .{query_string}, .{ .allocator = allocator });
+        return try conn.queryOpts("{}", .{query_string}, .{ .allocator = allocator });
     }
 
     pub fn queryForRow(self: *CanonicalDB, query_string: []const u8) !pg.Result {
@@ -65,7 +65,7 @@ pub const CanonicalDB = struct {
     ) !void {
         // Drop table
         {
-            var buf = std.ArrayList(u8).init(self.allocator);
+            var buf = std.ArrayList(u8).initCapacity(self.allocator, 1); //TODO what is the right init size here?
             defer buf.deinit();
 
             try buf.writer().print(

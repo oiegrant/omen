@@ -18,24 +18,29 @@ pub fn main() !void {
     defer _ = gpa.deinit();
 
     //Get full active event list into memeory
-    const canonical_db_config = configs.CanonicalDBConfig;
-    const canonicalDB = try cdb.CanonicalDB.init(gpa.allocator(), canonical_db_config);
+    const canonical_db_config = configs.CanonicalDBConfig{
+        .pool_size = 5,
+    };
+    var canonicalDB = try cdb.CanonicalDB.init(gpa.allocator(), canonical_db_config);
+    const cols_to_initialize: [2][]const u8 = .{ "colname1", "colname2" };
+
+    try canonicalDB.migrate("canonical_events", cols_to_initialize[0..]);
 
     const full_event_id_query =
-        {
-            //SELECT
-            //venue_event_id,
-            //event_id,
-            //updated_at,
-            //expiry_date,
-            //status
-            //FROM events
-            //WHERE venue = 'polymarket'
-            //AND status IN ('active', 'pending')"
-        };
+        \\SELECT
+        \\venue_event_id,
+        \\event_id,
+        \\updated_at,
+        \\expiry_date,
+        \\status
+        \\FROM events
+        \\WHERE venue = 'polymarket'
+        \\AND status IN ('active', 'pending')"
+    ;
+
     //TODO set this into local memory? or just save for reference? Maybe just extract the info you need into an array and toss the result
-    const result = canonicalDB.queryForResultAllocated(gpa.allocator(), full_event_id_query);
-    defer result;
+    _ = try canonicalDB.queryForResultAllocated(gpa.allocator(), full_event_id_query);
+    // defer result;
 
     var client = http.Client{ .allocator = gpa.allocator() };
     defer _ = client.deinit();
