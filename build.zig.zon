@@ -1,0 +1,12 @@
+.{
+    .name = .omen,
+    .version = "0.15.2",
+    .dependencies = .{
+        .pg = .{
+            .url = "git+https://github.com/karlseguin/pg.zig?ref=master#f8d4892387fbad2abdf775783e101e50a7114335",
+            .hash = "pg-0.0.0-Wp_7gag6BgD_QAZrPhNNEGpnUZR_LEkKT40Ura3p-4yX",
+        },
+    },
+    .paths = .{""},
+    .fingerprint = 0xb08eb38742218e22,
+}

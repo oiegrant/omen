@@ -78,8 +78,8 @@
   - X get all active events
     - X get all active markets
       - X get the associated clobTokenIds
-  - parse above into pre-canonical representation (includes clobtokenIds at least, maybe more additional info if needed)
-  - method to parse pre-canonical into pure canonical
+  - X parse above into pre-canonical representation (includes clobtokenIds at least, maybe more additional info if needed)
+  - WIP method to parse pre-canonical into pure canonical
   
     -clobTokenIds -> all of these should be fed into the websocket which yields back messages over time
       - handles reconnect + backoffs
