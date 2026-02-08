@@ -55,6 +55,31 @@ pub fn main() !void {
     ;
     try canonicalDB.initTable(creation_statement);
 
+    //A sample write to view data
+    const test_data =
+        \\INSERT INTO canonical_events (
+        \\        event_id, venue, venue_event_id, event_name, event_description,
+        \\        event_type, event_category, event_tags, start_date, expiry_date,
+        \\        status, data_hash
+        \\    ) VALUES (
+        \\        12345,
+        \\        'polymarket',
+        \\        'PM-001',
+        \\        'Test Event',
+        \\        'This is a test event for debugging',
+        \\        'market',
+        \\        'finance',
+        \\        ARRAY['test', 'debug'],
+        \\        now(),
+        \\        now() + interval '7 days',
+        \\        'active',
+        \\        decode('abcdef', 'hex')
+        \\    )
+        \\    ON CONFLICT (venue, venue_event_id) DO NOTHING;
+    ;
+
+    try canonicalDB.exec(test_data);
+
     const full_event_id_query =
         \\SELECT
         \\venue_event_id,
@@ -68,8 +93,7 @@ pub fn main() !void {
     ;
 
     //TODO set this into local memory? or just save for reference? Maybe just extract the info you need into an array and toss the result
-    const full_event_table = try canonicalDB.queryForResultAllocated(gpa.allocator(), full_event_id_query);
-    defer full_event_table.deinit();
+    try canonicalDB.queryForResultAllocated(gpa.allocator(), full_event_id_query);
 
     var client = http.Client{ .allocator = gpa.allocator() };
     defer _ = client.deinit();
@@ -150,8 +174,6 @@ pub fn main() !void {
 
     //     try canonical_events.append(gpa.allocator(), temp_event);
     // }
-    print("hello", .{});
-
     for (canonical_events.items) |cevent| {
         print("{}\n", .{cevent.event_id});
     }

@@ -3,6 +3,7 @@ const pg = @import("pg");
 const builtin = @import("builtin");
 const configs = @import("data/configs.zig");
 pub const log = std.log.scoped(.example);
+const canon = @import("data/canonical-entities.zig");
 
 pub const CanonicalDB = struct {
     allocator: std.mem.Allocator,
@@ -36,9 +37,9 @@ pub const CanonicalDB = struct {
         self.pool.deinit();
     }
 
-    // SELECT event_id
-    // FROM events
-    // WHERE venue = "polymarket" AND venue_event_id = ?
+    pub fn exec(self: *CanonicalDB, statement: []const u8) !void {
+        _ = try self.pool.exec(statement, .{});
+    }
 
     pub fn queryForResult(self: *CanonicalDB, query_string: []const u8) !pg.Result {
         log.info("\n\nExample 2", .{});
@@ -48,16 +49,20 @@ pub const CanonicalDB = struct {
         return try conn.query("{}", .{query_string});
     }
 
-    pub fn queryForResultAllocated(self: *CanonicalDB, allocator: std.mem.Allocator, query_string: []const u8) !*pg.Result {
+    pub fn queryForResultAllocated(self: *CanonicalDB, allocator: std.mem.Allocator, query_string: []const u8) !void {
         var conn = try self.pool.acquire();
         defer conn.release();
 
-        return conn.queryOpts(query_string, .{}, .{ .allocator = allocator }) catch |err| {
-            if (conn.err) |pg_err| {
-                std.log.err("queryForResultAllocated:: failure {s}", .{pg_err.message});
-            }
-            return err;
-        };
+        var result = try conn.queryOpts(query_string, .{}, .{ .allocator = allocator });
+        defer result.deinit();
+
+        while (try result.next()) |row| {
+            const id = row.get(i64, 1);
+
+            // string values are only valid until the next call to next()
+            // dupe the value if needed
+            log.info("User {d}", .{id});
+        }
     }
 
     pub fn queryForRow(self: *CanonicalDB, query_string: []const u8) !pg.Result {
@@ -70,10 +75,6 @@ pub const CanonicalDB = struct {
 
     pub fn clearTable(self: *CanonicalDB) !void {
         _ = try self.pool.exec("drop table if exists canonical_events", .{});
-    }
-
-    pub fn clearTableTEST(self: *CanonicalDB) !void {
-        _ = try self.pool.exec("drop table if exists pg_example_users", .{});
     }
 
     pub fn initTable(self: *CanonicalDB, creation_statement: []const u8) !void {
