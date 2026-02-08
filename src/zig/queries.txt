@@ -1,0 +1,40 @@
+CREATE TABLE canonical_events (
+    event_id        BIGINT PRIMARY KEY,
+    venue           TEXT NOT NULL,
+    venue_event_id  TEXT NOT NULL,
+    event_name        TEXT NOT NULL,
+    event_description TEXT,
+    event_type        TEXT,
+    event_category    TEXT,
+    event_tags        TEXT[],
+    start_date   TIMESTAMPTZ,
+    expiry_date  TIMESTAMPTZ,
+    status TEXT NOT NULL CHECK (
+        status IN ('active', 'pending', 'resolved', 'cancelled', 'expired')
+    ),
+    source_updated_at TIMESTAMPTZ,                  -- timestamp from venue
+    data_hash         BYTEA NOT NULL,               -- hash of canonical fields
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (venue, venue_event_id)
+);
+
+
+CREATE INDEX idx_events_venue_lookup
+ON canonical_events (venue, venue_event_id);
+
+-- Fast active scans
+CREATE INDEX idx_events_status
+ON canonical_events (status);
+
+-- Incremental sync / diffing
+CREATE INDEX idx_events_updated_at
+ON canonical_events (updated_at);
+
+-- Expiry-based cleanup or transitions
+CREATE INDEX idx_events_expiry
+ON canonical_events (expiry_date);
+
+SELECT event_id, data_hash
+FROM canonical_events
+WHERE venue = $1 AND venue_event_id = $2;

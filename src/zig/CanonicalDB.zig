@@ -9,14 +9,19 @@ pub const CanonicalDB = struct {
     pool: *pg.Pool,
 
     pub fn init(allocator: std.mem.Allocator, config: configs.CanonicalDBConfig) !CanonicalDB {
-        const pool = pg.Pool.init(allocator, .{ .size = config.pool_size, .connect = .{
-            .port = 5432,
-            .host = "127.0.0.1",
-        }, .auth = .{
-            .username = "postgres",
-            .database = "postgres",
-            .timeout = 10_000,
-        } }) catch |err| {
+        const pool = pg.Pool.init(allocator, .{
+            .size = config.pool_size,
+            .connect = .{
+                .port = config.port,
+                .host = config.host,
+            },
+            .auth = .{
+                .username = config.username,
+                .password = config.password,
+                .database = config.database,
+                .timeout = config.timeout,
+            },
+        }) catch |err| {
             log.err("Failed to connect: {}", .{err});
             std.posix.exit(1);
         };
@@ -27,7 +32,7 @@ pub const CanonicalDB = struct {
         };
     }
 
-    pub fn deinit(self: *CanonicalDB) !void {
+    pub fn deinit(self: *CanonicalDB) void {
         self.pool.deinit();
     }
 
@@ -46,7 +51,13 @@ pub const CanonicalDB = struct {
     pub fn queryForResultAllocated(self: *CanonicalDB, allocator: std.mem.Allocator, query_string: []const u8) !*pg.Result {
         var conn = try self.pool.acquire();
         defer conn.release();
-        return try conn.queryOpts("{}", .{query_string}, .{ .allocator = allocator });
+
+        return conn.queryOpts(query_string, .{}, .{ .allocator = allocator }) catch |err| {
+            if (conn.err) |pg_err| {
+                std.log.err("queryForResultAllocated:: failure {s}", .{pg_err.message});
+            }
+            return err;
+        };
     }
 
     pub fn queryForRow(self: *CanonicalDB, query_string: []const u8) !pg.Result {
@@ -55,6 +66,41 @@ pub const CanonicalDB = struct {
         var conn = try self.pool.acquire();
         defer conn.release();
         return try conn.row("{}", .{query_string}) orelse unreachable;
+    }
+
+    pub fn clearTable(self: *CanonicalDB) !void {
+        _ = try self.pool.exec("drop table if exists canonical_events", .{});
+    }
+
+    pub fn clearTableTEST(self: *CanonicalDB) !void {
+        _ = try self.pool.exec("drop table if exists pg_example_users", .{});
+    }
+
+    pub fn initTable(self: *CanonicalDB, creation_statement: []const u8) !void {
+        var conn = try self.pool.acquire();
+        defer conn.release();
+        _ = conn.exec(creation_statement, .{}) catch |err| {
+            if (conn.err) |pg_err| {
+                std.log.err("table creation failed: {s}", .{pg_err.message});
+            }
+            return err;
+        };
+    }
+
+    pub fn initTableTEST(self: *CanonicalDB) !void {
+        var conn = try self.pool.acquire();
+        defer conn.release();
+
+        // exec returns the # of rows affected for insert/select/delete
+        _ = conn.exec("create table pg_example_users (id integer, name text)", .{}) catch |err| {
+            if (conn.err) |pg_err| {
+                // conn.err is an optional PostgreSQL error. It has many fields,
+                // many of which are nullable, but the `message`, `code` and
+                // `severity` are always present.
+                log.err("create failure: {s}", .{pg_err.message});
+            }
+            return err;
+        };
     }
 
     //TODO for testing. consider removing this, or figure out a better way to init db

@@ -2,7 +2,10 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+
+    const is_debug = b.option(bool, "debug", "Build in debug mode") orelse false;
+
+    const optimize = if (is_debug) .Debug else b.standardOptimizeOption(.{});
 
     // Pull pg.zig from build.zig.zon
     const pg = b.dependency("pg", .{

@@ -20,11 +20,40 @@ pub fn main() !void {
     //Get full active event list into memeory
     const canonical_db_config = configs.CanonicalDBConfig{
         .pool_size = 5,
+        .port = 5432,
+        .host = "127.0.0.1",
+        .username = "postgres",
+        .password = "postgres",
+        .database = "postgres",
+        .timeout = 10_000,
     };
-    var canonicalDB = try cdb.CanonicalDB.init(gpa.allocator(), canonical_db_config);
-    const cols_to_initialize: [2][]const u8 = .{ "colname1", "colname2" };
 
-    try canonicalDB.migrate("canonical_events", cols_to_initialize[0..]);
+    //Clear and create table - temp for testing
+    var canonicalDB = try cdb.CanonicalDB.init(gpa.allocator(), canonical_db_config);
+    defer canonicalDB.deinit();
+    try canonicalDB.clearTable();
+    const creation_statement =
+        \\CREATE TABLE canonical_events (
+        \\    event_id        BIGINT PRIMARY KEY,
+        \\    venue           TEXT NOT NULL,
+        \\    venue_event_id  TEXT NOT NULL,
+        \\    event_name        TEXT NOT NULL,
+        \\    event_description TEXT,
+        \\    event_type        TEXT,
+        \\    event_category    TEXT,
+        \\    event_tags        TEXT[],
+        \\    start_date   TIMESTAMPTZ,
+        \\    expiry_date  TIMESTAMPTZ,
+        \\    status TEXT NOT NULL CHECK (
+        \\        status IN ('active', 'pending', 'resolved', 'cancelled', 'expired')
+        \\    ),
+        \\    data_hash         BYTEA NOT NULL,               -- hash of canonical fields
+        \\    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        \\    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        \\    UNIQUE (venue, venue_event_id)
+        \\);
+    ;
+    try canonicalDB.initTable(creation_statement);
 
     const full_event_id_query =
         \\SELECT
@@ -33,14 +62,14 @@ pub fn main() !void {
         \\updated_at,
         \\expiry_date,
         \\status
-        \\FROM events
+        \\FROM canonical_events
         \\WHERE venue = 'polymarket'
-        \\AND status IN ('active', 'pending')"
+        \\AND status IN ('active', 'pending')
     ;
 
     //TODO set this into local memory? or just save for reference? Maybe just extract the info you need into an array and toss the result
-    _ = try canonicalDB.queryForResultAllocated(gpa.allocator(), full_event_id_query);
-    // defer result;
+    const full_event_table = try canonicalDB.queryForResultAllocated(gpa.allocator(), full_event_id_query);
+    defer full_event_table.deinit();
 
     var client = http.Client{ .allocator = gpa.allocator() };
     defer _ = client.deinit();

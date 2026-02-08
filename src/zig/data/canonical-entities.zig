@@ -8,7 +8,7 @@ pub const OrderSide = enum { BID, ASK };
 pub const OrderStatus = enum { OPEN, FILLED, PARTIAL, CANCELLED };
 
 pub const CanonicalVenue = struct {
-    venue_id: VenueID,
+    name: []u8,
     underlying_asset: []u8, //USDC
 };
 

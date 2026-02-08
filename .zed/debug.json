@@ -1,0 +1,14 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+  {
+    "adapter": "CodeLLDB",
+    "label": "zig app",
+    "request": "launch",
+    "program": "zig-out/bin/ingest-polymarkets",
+    "build": "mybuildtask",
+    "args": [],
+  },
+]
