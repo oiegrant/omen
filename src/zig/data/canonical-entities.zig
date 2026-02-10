@@ -14,7 +14,7 @@ pub const CanonicalVenue = struct {
 
 pub const CanonicalEvent = struct {
     venue_id: VenueID,
-    venue_event_id: u64,
+    venue_event_id: []const u8,
     event_id: u64,
     event_name: []const u8,
     event_description: []const u8,
@@ -27,7 +27,7 @@ pub const CanonicalEvent = struct {
 };
 
 pub const CanonicalMarket = struct {
-    venue_market_id: u64,
+    venue_market_id: []const u8,
     event_id: u64,
     market_id: u64,
     market_description: []const u8,
@@ -76,4 +76,24 @@ pub const CanonicalResolution = struct {
     resolution_time: i64,
     resolved_value: []const u8,
     source: []const u8,
+};
+
+pub const CanonicalMarketCacheField = struct {
+    venue_market_id: []const u8,
+    market_id: u64,
+    data_hash: [32]u8,
+
+    pub fn deinit(self: *CanonicalMarketCacheField, allocator: std.mem.Allocator) void {
+        allocator.free(self.venue_market_id);
+    }
+};
+
+pub const CanonicalEventCacheField = struct {
+    venue_event_id: []const u8,
+    event_id: u64,
+    data_hash: [32]u8,
+
+    pub fn deinit(self: *CanonicalEventCacheField, allocator: std.mem.Allocator) void {
+        allocator.free(self.venue_event_id);
+    }
 };
