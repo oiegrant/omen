@@ -49,20 +49,59 @@ pub const CanonicalDB = struct {
         return try conn.query("{}", .{query_string});
     }
 
-    pub fn queryForResultAllocated(self: *CanonicalDB, allocator: std.mem.Allocator, query_string: []const u8) !void {
+    pub fn getActiveEventsFromDB(self: *CanonicalDB, allocator: std.mem.Allocator) !std.StringHashMap(canon.CanonicalEventCacheField) {
+        const query_string =
+            \\SELECT
+            \\venue_event_id,
+            \\event_id,
+            \\data_hash
+            \\FROM canonical_events
+            \\WHERE venue = 'polymarket'
+            \\AND status IN ('active', 'pending')
+        ;
         var conn = try self.pool.acquire();
         defer conn.release();
 
         var result = try conn.queryOpts(query_string, .{}, .{ .allocator = allocator });
         defer result.deinit();
 
-        while (try result.next()) |row| {
-            const id = row.get(i64, 1);
-
-            // string values are only valid until the next call to next()
-            // dupe the value if needed
-            log.info("User {d}", .{id});
+        var cacheEventsMap = std.StringHashMap(canon.CanonicalEventCacheField).init(allocator);
+        errdefer {
+            var it = cacheEventsMap.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.venue_event_id);
+            }
+            cacheEventsMap.deinit();
         }
+
+        while (try result.next()) |row| {
+            const venue_event_id = try allocator.dupe(u8, row.get([]const u8, 0));
+            errdefer allocator.free(venue_event_id);
+
+            const event_id: u64 = @intCast(row.get(i64, 1));
+
+            const data_hash = blk: {
+                const slice = row.get([]const u8, 2);
+                if (slice.len != 32) {
+                    std.debug.print("ERROR: data_hash length is {d}, expected 32\n", .{slice.len});
+                    return error.InvalidDataHashLength;
+                }
+                var hash: [32]u8 = undefined;
+                @memcpy(&hash, slice);
+                break :blk hash;
+            };
+
+            const temp_cache_field = canon.CanonicalEventCacheField{
+                .venue_event_id = venue_event_id,
+                .event_id = event_id,
+                .data_hash = data_hash,
+            };
+
+            try cacheEventsMap.put(venue_event_id, temp_cache_field);
+        }
+
+        return cacheEventsMap;
     }
 
     pub fn queryForRow(self: *CanonicalDB, query_string: []const u8) !pg.Result {
@@ -77,28 +116,33 @@ pub const CanonicalDB = struct {
         _ = try self.pool.exec("drop table if exists canonical_events", .{});
     }
 
-    pub fn initTable(self: *CanonicalDB, creation_statement: []const u8) !void {
+    pub fn initTable(self: *CanonicalDB) !void {
+        const creation_statement =
+            \\CREATE TABLE canonical_events (
+            \\    event_id        BIGINT PRIMARY KEY,
+            \\    venue           TEXT NOT NULL,
+            \\    venue_event_id  TEXT NOT NULL,
+            \\    event_name        TEXT NOT NULL,
+            \\    event_description TEXT,
+            \\    event_type        TEXT,
+            \\    event_category    TEXT,
+            \\    event_tags        TEXT[],
+            \\    start_date   TIMESTAMPTZ,
+            \\    expiry_date  TIMESTAMPTZ,
+            \\    status TEXT NOT NULL CHECK (
+            \\        status IN ('active', 'pending', 'resolved', 'cancelled', 'expired')
+            \\    ),
+            \\    data_hash         BYTEA NOT NULL,               -- hash of canonical fields
+            \\    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+            \\    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+            \\    UNIQUE (venue, venue_event_id)
+            \\);
+        ;
         var conn = try self.pool.acquire();
         defer conn.release();
         _ = conn.exec(creation_statement, .{}) catch |err| {
             if (conn.err) |pg_err| {
                 std.log.err("table creation failed: {s}", .{pg_err.message});
-            }
-            return err;
-        };
-    }
-
-    pub fn initTableTEST(self: *CanonicalDB) !void {
-        var conn = try self.pool.acquire();
-        defer conn.release();
-
-        // exec returns the # of rows affected for insert/select/delete
-        _ = conn.exec("create table pg_example_users (id integer, name text)", .{}) catch |err| {
-            if (conn.err) |pg_err| {
-                // conn.err is an optional PostgreSQL error. It has many fields,
-                // many of which are nullable, but the `message`, `code` and
-                // `severity` are always present.
-                log.err("create failure: {s}", .{pg_err.message});
             }
             return err;
         };
