@@ -1,8 +1,8 @@
 const std = @import("std");
 pub const EventType = enum { BINARY, CATEGORICAL };
 pub const MarketType = enum { BINARY };
-pub const EventStatus = enum { ACTIVE, PENDING_RESOLUTION, RESOLVED, CANCELLED, CLOSED };
-pub const MarketStatus = enum { PRE_OPEN, ACTIVE, PENDING_RESOLUTION, RESOLVED, DISPUTED, CANCELLED, CLOSED };
+pub const EventStatus = enum { ACTIVE, CLOSED };
+pub const MarketStatus = enum { PRE_OPEN, ACTIVE, PENDING_RESOLUTION, RESOLVED, CLOSED };
 pub const VenueID = enum { POLYMARKET, KALSHI };
 pub const OrderSide = enum { BID, ASK };
 pub const OrderStatus = enum { OPEN, FILLED, PARTIAL, CANCELLED };
@@ -24,6 +24,9 @@ pub const CanonicalEvent = struct {
     start_date: i64,
     expiry_date: i64,
     event_status: EventStatus,
+    data_hash: [32]u8,
+    created_at: i64, //Internal
+    updated_at: i64, //Internal
 };
 
 pub const CanonicalMarket = struct {
@@ -36,6 +39,9 @@ pub const CanonicalMarket = struct {
     expiry_date: i64,
     market_status: MarketStatus,
     outcomes: []CanonicalOutcome,
+    data_hash: [32]u8,
+    created_at: i64, //Internal
+    updated_at: i64, //Internal
 };
 
 pub const CanonicalOutcome = struct {
@@ -82,6 +88,7 @@ pub const CanonicalMarketCacheField = struct {
     venue_market_id: []const u8,
     market_id: u64,
     data_hash: [32]u8,
+    created_at: i64,
 
     pub fn deinit(self: *CanonicalMarketCacheField, allocator: std.mem.Allocator) void {
         allocator.free(self.venue_market_id);
@@ -92,6 +99,7 @@ pub const CanonicalEventCacheField = struct {
     venue_event_id: []const u8,
     event_id: u64,
     data_hash: [32]u8,
+    created_at: i64,
 
     pub fn deinit(self: *CanonicalEventCacheField, allocator: std.mem.Allocator) void {
         allocator.free(self.venue_event_id);

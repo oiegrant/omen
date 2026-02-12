@@ -54,7 +54,8 @@ pub const CanonicalDB = struct {
             \\SELECT
             \\venue_event_id,
             \\event_id,
-            \\data_hash
+            \\data_hash,
+            \\created_at
             \\FROM canonical_events
             \\WHERE venue = 'polymarket'
             \\AND status IN ('active', 'pending')
@@ -92,16 +93,78 @@ pub const CanonicalDB = struct {
                 break :blk hash;
             };
 
+            const created_at = row.get(i64, 3);
+
             const temp_cache_field = canon.CanonicalEventCacheField{
                 .venue_event_id = venue_event_id,
                 .event_id = event_id,
                 .data_hash = data_hash,
+                .created_at = created_at,
             };
 
             try cacheEventsMap.put(venue_event_id, temp_cache_field);
         }
 
         return cacheEventsMap;
+    }
+
+    pub fn getActiveMarketsFromDB(self: *CanonicalDB, allocator: std.mem.Allocator) !std.StringHashMap(canon.CanonicalMarketCacheField) {
+        const query_string =
+            \\SELECT
+            \\venue_market_id,
+            \\market_id,
+            \\data_hash,
+            \\created_at
+            \\FROM canonical_markets
+            \\WHERE venue = 'polymarket'
+            \\AND market_status IN ('active', 'pending')
+        ;
+        var conn = try self.pool.acquire();
+        defer conn.release();
+
+        var result = try conn.queryOpts(query_string, .{}, .{ .allocator = allocator });
+        defer result.deinit();
+
+        var cacheMarketsMap = std.StringHashMap(canon.CanonicalMarketCacheField).init(allocator);
+        errdefer {
+            var it = cacheMarketsMap.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.venue_market_id);
+            }
+            cacheMarketsMap.deinit();
+        }
+
+        while (try result.next()) |row| {
+            const venue_market_id = try allocator.dupe(u8, row.get([]const u8, 0));
+            errdefer allocator.free(venue_market_id);
+
+            const market_id: u64 = @intCast(row.get(i64, 1));
+
+            const data_hash = blk: {
+                const slice = row.get([]const u8, 2);
+                if (slice.len != 32) {
+                    std.debug.print("ERROR: data_hash length is {d}, expected 32\n", .{slice.len});
+                    return error.InvalidDataHashLength;
+                }
+                var hash: [32]u8 = undefined;
+                @memcpy(&hash, slice);
+                break :blk hash;
+            };
+
+            const created_at = row.get(i64, 3);
+
+            const temp_cache_field = canon.CanonicalMarketCacheField{
+                .venue_market_id = venue_market_id,
+                .market_id = market_id,
+                .data_hash = data_hash,
+                .created_at = created_at,
+            };
+
+            try cacheMarketsMap.put(venue_market_id, temp_cache_field);
+        }
+
+        return cacheMarketsMap;
     }
 
     pub fn queryForRow(self: *CanonicalDB, query_string: []const u8) !pg.Result {
@@ -112,11 +175,15 @@ pub const CanonicalDB = struct {
         return try conn.row("{}", .{query_string}) orelse unreachable;
     }
 
-    pub fn clearTable(self: *CanonicalDB) !void {
+    pub fn clearEventsTable(self: *CanonicalDB) !void {
         _ = try self.pool.exec("drop table if exists canonical_events", .{});
     }
 
-    pub fn initTable(self: *CanonicalDB) !void {
+    pub fn clearMarketsTable(self: *CanonicalDB) !void {
+        _ = try self.pool.exec("drop table if exists canonical_markets", .{});
+    }
+
+    pub fn initEventsTable(self: *CanonicalDB) !void {
         const creation_statement =
             \\CREATE TABLE canonical_events (
             \\    event_id        BIGINT PRIMARY KEY,
@@ -124,7 +191,9 @@ pub const CanonicalDB = struct {
             \\    venue_event_id  TEXT NOT NULL,
             \\    event_name        TEXT NOT NULL,
             \\    event_description TEXT,
-            \\    event_type        TEXT,
+            \\    event_type        TEXT NOT NULL CHECK (
+            \\        event_type IN ('BINARY', 'CATEGORICAL')
+            \\    ),
             \\    event_category    TEXT,
             \\    event_tags        TEXT[],
             \\    start_date   TIMESTAMPTZ,
@@ -136,6 +205,44 @@ pub const CanonicalDB = struct {
             \\    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
             \\    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
             \\    UNIQUE (venue, venue_event_id)
+            \\);
+        ;
+        var conn = try self.pool.acquire();
+        defer conn.release();
+        _ = conn.exec(creation_statement, .{}) catch |err| {
+            if (conn.err) |pg_err| {
+                std.log.err("table creation failed: {s}", .{pg_err.message});
+            }
+            return err;
+        };
+    }
+
+    pub fn initMarketsTable(self: *CanonicalDB) !void {
+        const creation_statement =
+            \\CREATE TABLE canonical_markets (
+            \\    market_id        BIGINT PRIMARY KEY,
+            \\    event_id         BIGINT NOT NULL REFERENCES canonical_events(event_id),
+            \\    venue            TEXT NOT NULL,
+            \\    venue_market_id  TEXT NOT NULL,
+            \\    market_description TEXT NOT NULL,
+            \\    market_type        TEXT NOT NULL CHECK (
+            \\        market_type IN ('BINARY')
+            \\    ),
+            \\    start_date       TIMESTAMPTZ,
+            \\    expiry_date      TIMESTAMPTZ,
+            \\    market_status    TEXT NOT NULL CHECK (
+            \\        market_status IN (
+            \\            'PRE_OPEN',
+            \\            'ACTIVE',
+            \\            'PENDING_RESOLUTION',
+            \\            'RESOLVED',
+            \\            'CLOSED'
+            \\        )
+            \\    ),
+            \\    data_hash        BYTEA NOT NULL,
+            \\    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            \\    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            \\    UNIQUE (venue, venue_market_id)
             \\);
         ;
         var conn = try self.pool.acquire();
