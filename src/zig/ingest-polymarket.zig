@@ -14,9 +14,16 @@ const SnowFlakeGenerator = @import("utils/SnowFlakeGenerator.zig");
 
 const ParsedEvents = []pp.ParsedPolymarketEvent;
 
-const EVENTS_PER_CALL = 100;
+const EVENTS_PER_CALL = 500;
 
 pub fn main() !void {
+    var main_timer = try std.time.Timer.start();
+    var api_timer: u64 = 0;
+    var parse_timer: u64 = 0;
+    var api_queries: u64 = 0;
+    var total_events: u64 = 0;
+    var total_markets: u64 = 0;
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
     defer _ = gpa.deinit();
@@ -75,7 +82,14 @@ pub fn main() !void {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const arena_alloc = arena.allocator();
+
+        const api_start = main_timer.read();
         const events: std.json.Parsed(ParsedEvents) = try fetchParsedForBatch(arena_alloc, &client, offset);
+        const api_end = main_timer.read();
+        api_timer += (api_end - api_start);
+        api_queries += 1;
+
+        const parse_start = main_timer.read();
 
         var canonical_events_to_create = try ArrayList(canon.CanonicalEvent).initCapacity(arena_alloc, EVENTS_PER_CALL);
         var canonical_events_to_update = try ArrayList(canon.CanonicalEvent).initCapacity(arena_alloc, EVENTS_PER_CALL);
@@ -130,8 +144,8 @@ pub fn main() !void {
         // canonicalDB.updateMarkets(canonical_markets_to_update);
         // canonicalDB.createMarkets(canonical_markets_to_create);
 
-        print("NEW: {d} events | {d} markets\n", .{ canonical_events_to_create.items.len, canonical_markets_to_create.items.len });
-        print("UPDATE: {d} events | {d} markets\n", .{ canonical_events_to_update.items.len, canonical_markets_to_update.items.len });
+        total_events += canonical_events_to_create.items.len;
+        total_markets += canonical_markets_to_create.items.len;
 
         if (events.value.len < EVENTS_PER_CALL) {
             break;
@@ -139,14 +153,25 @@ pub fn main() !void {
         offset += EVENTS_PER_CALL;
 
         //TODO for testing remove
-        if (offset > 1000) {
-            break;
-        }
+        // if (offset > 10_000) {
+        //     break;
+        // }
 
         // break if events comeback as empty
 
         // or if the number of events is less than our limit
+        const parse_end = main_timer.read();
+        parse_timer += parse_end - parse_start;
     }
+
+    const api_ms = api_timer / 1_000_000;
+    const parse_ms = parse_timer / 1_000_000;
+    print("API time: {d} ms\n", .{api_ms});
+    print("Parsing time: {d} ms\n", .{parse_ms});
+    print("API/Parse: {d} ms\n", .{api_ms / parse_ms});
+    print("ms per API Query: {d} ms\n", .{api_ms / api_queries});
+    print("TOTAL: {d} events | {d} markets\n", .{ total_events, total_markets });
+    print("Total time: {d} ms\n", .{main_timer.read() / 1_000_000});
 }
 
 pub fn buildCanonicalMarketForCreate(
