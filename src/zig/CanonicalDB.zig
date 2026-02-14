@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const configs = @import("data/configs.zig");
 pub const log = std.log.scoped(.example);
 const canon = @import("data/canonical-entities.zig");
+const ArrayList = std.ArrayList;
 
 pub const CanonicalDB = struct {
     allocator: std.mem.Allocator,
@@ -108,6 +109,199 @@ pub const CanonicalDB = struct {
         return cacheEventsMap;
     }
 
+    pub fn upsertEvents(self: *CanonicalDB, events: ArrayList(canon.CanonicalEvent)) !void {
+        if (events.items.len == 0) return;
+
+        // Start transaction
+        try self.exec("BEGIN");
+        errdefer self.exec("ROLLBACK") catch {};
+
+        for (events.items) |event| {
+            const event_type_str = switch (event.event_type) {
+                .BINARY => "BINARY",
+                .CATEGORICAL => "CATEGORICAL",
+            };
+
+            const status_str = switch (event.event_status) {
+                .ACTIVE => "active",
+                .CLOSED => "closed",
+            };
+
+            const venue_str = @tagName(event.venue_id);
+
+            // Use ON CONFLICT to handle upserts
+            _ = try self.pool.exec(
+                \\INSERT INTO canonical_events (
+                \\  event_id, venue, venue_event_id, event_name, event_description,
+                \\  event_type, event_category, event_tags, start_date, expiry_date,
+                \\  status, data_hash, created_at, updated_at
+                \\) VALUES (
+                \\  $1, $2, $3, $4, $5, $6, $7, $8,
+                \\  $9, $10, $11, $12,
+                \\  $13, $14
+                \\)
+                \\ON CONFLICT (event_id) DO UPDATE SET
+                \\  venue = EXCLUDED.venue,
+                \\  venue_event_id = EXCLUDED.venue_event_id,
+                \\  event_name = EXCLUDED.event_name,
+                \\  event_description = EXCLUDED.event_description,
+                \\  event_type = EXCLUDED.event_type,
+                \\  event_category = EXCLUDED.event_category,
+                \\  event_tags = EXCLUDED.event_tags,
+                \\  start_date = EXCLUDED.start_date,
+                \\  expiry_date = EXCLUDED.expiry_date,
+                \\  status = EXCLUDED.status,
+                \\  data_hash = EXCLUDED.data_hash,
+                \\  updated_at = $14
+            , .{
+                event.event_id,
+                venue_str,
+                event.venue_event_id,
+                event.event_name,
+                event.event_description,
+                event_type_str,
+                event.event_category,
+                event.event_tags,
+                event.start_date,
+                event.expiry_date,
+                status_str,
+                &event.data_hash,
+                event.created_at,
+                event.updated_at,
+            });
+        }
+        try self.exec("COMMIT");
+    }
+
+    pub fn updateEventsBulk(self: *CanonicalDB, events_to_update: ArrayList(canon.CanonicalEvent)) !void {
+        if (events_to_update.items.len == 0) return;
+
+        const allocator = self.allocator;
+
+        // Start transaction
+        try self.exec("BEGIN");
+        errdefer self.exec("ROLLBACK") catch {};
+
+        // Create temporary table with same structure
+        try self.exec(
+            \\CREATE TEMP TABLE temp_event_updates (
+            \\  event_id BIGINT PRIMARY KEY,
+            \\  venue TEXT NOT NULL,
+            \\  venue_event_id TEXT NOT NULL,
+            \\  event_name TEXT NOT NULL,
+            \\  event_description TEXT,
+            \\  event_type TEXT NOT NULL,
+            \\  event_category TEXT,
+            \\  event_tags TEXT[],
+            \\  start_date TIMESTAMPTZ,
+            \\  expiry_date TIMESTAMPTZ,
+            \\  status TEXT NOT NULL,
+            \\  data_hash BYTEA NOT NULL
+            \\) ON COMMIT DROP
+        );
+
+        // Prepare CSV data for COPY
+        var csv_buffer = std.ArrayList(u8).init(allocator);
+        defer csv_buffer.deinit();
+
+        for (events_to_update.items) |event| {
+            const venue_str = @tagName(event.venue_id);
+
+            const event_type_str = switch (event.event_type) {
+                .BINARY => "BINARY",
+                .CATEGORICAL => "CATEGORICAL",
+            };
+
+            const status_str = switch (event.event_status) {
+                .active => "active",
+                .pending => "pending",
+                .resolved => "resolved",
+                .cancelled => "cancelled",
+                .expired => "expired",
+            };
+
+            // Build array string: {tag1,tag2,tag3}
+            var tags_str = std.ArrayList(u8).init(allocator);
+            defer tags_str.deinit();
+            try tags_str.append('{');
+            for (event.event_tags, 0..) |tag, i| {
+                if (i > 0) try tags_str.append(',');
+                // Escape quotes in tags
+                try tags_str.append('"');
+                for (tag) |c| {
+                    if (c == '"') try tags_str.appendSlice("\\\"") else try tags_str.append(c);
+                }
+                try tags_str.append('"');
+            }
+            try tags_str.append('}');
+
+            // Convert data_hash to hex string for BYTEA
+            var hash_hex = std.ArrayList(u8).init(allocator);
+            defer hash_hex.deinit();
+            try hash_hex.appendSlice("\\\\x"); // Escaped backslash for CSV
+            for (event.data_hash) |byte| {
+                try hash_hex.writer().print("{x:0>2}", .{byte});
+            }
+
+            // Escape description for CSV
+            var escaped_desc = std.ArrayList(u8).init(allocator);
+            defer escaped_desc.deinit();
+            for (event.event_description) |c| {
+                if (c == '\t' or c == '\n' or c == '\r' or c == '\\') {
+                    try escaped_desc.append('\\');
+                }
+                try escaped_desc.append(c);
+            }
+
+            // Build CSV row (tab-delimited)
+            try csv_buffer.writer().print("{d}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{s}\t{d}\t{d}\t{s}\t{s}\n", .{
+                event.event_id,
+                venue_str,
+                event.venue_event_id,
+                event.event_name,
+                escaped_desc.items,
+                event_type_str,
+                event.event_category,
+                tags_str.items,
+                event.start_date,
+                event.expiry_date,
+                status_str,
+                hash_hex.items,
+            });
+        }
+
+        // Execute COPY command
+        // Note: Syntax depends on your PostgreSQL driver
+        // If your driver supports COPY FROM STDIN:
+        try self.pool.copyFrom("COPY temp_event_updates FROM STDIN WITH (FORMAT csv, DELIMITER E'\\t', NULL '')", csv_buffer.items);
+
+        // Perform the bulk update
+        try self.exec(
+            \\UPDATE canonical_events ce
+            \\SET
+            \\  venue = tmp.venue,
+            \\  venue_event_id = tmp.venue_event_id,
+            \\  event_name = tmp.event_name,
+            \\  event_description = tmp.event_description,
+            \\  event_type = tmp.event_type,
+            \\  event_category = tmp.event_category,
+            \\  event_tags = tmp.event_tags,
+            \\  start_date = tmp.start_date,
+            \\  expiry_date = tmp.expiry_date,
+            \\  status = tmp.status,
+            \\  data_hash = tmp.data_hash,
+            \\  updated_at = now()
+            \\FROM temp_event_updates tmp
+            \\WHERE ce.event_id = tmp.event_id
+        );
+
+        // Commit transaction (temp table auto-drops)
+        try self.exec("COMMIT");
+    }
+
+    // pub fn updateMarkets(markets_to_update: ArrayList(canon.CanonicalMarket)) !void {}
+    // pub fn createMarkets(markets_to_create: ArrayList(canon.CanonicalMarket)) !void {}
+
     pub fn getActiveMarketsFromDB(self: *CanonicalDB, allocator: std.mem.Allocator) !std.StringHashMap(canon.CanonicalMarketCacheField) {
         const query_string =
             \\SELECT
@@ -196,14 +390,14 @@ pub const CanonicalDB = struct {
             \\    ),
             \\    event_category    TEXT,
             \\    event_tags        TEXT[],
-            \\    start_date   TIMESTAMPTZ,
-            \\    expiry_date  TIMESTAMPTZ,
+            \\    start_date   BIGINT,
+            \\    expiry_date  BIGINT,
             \\    status TEXT NOT NULL CHECK (
             \\        status IN ('active', 'pending', 'resolved', 'cancelled', 'expired')
             \\    ),
             \\    data_hash         BYTEA NOT NULL,               -- hash of canonical fields
-            \\    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-            \\    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+            \\    created_at        BIGINT NOT NULL,
+            \\    updated_at        BIGINT NOT NULL,
             \\    UNIQUE (venue, venue_event_id)
             \\);
         ;
@@ -301,25 +495,3 @@ pub const CanonicalDB = struct {
         };
     }
 };
-
-// pub fn main() !void {
-//     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-//     const allocator = if (builtin.mode == .Debug) gpa.allocator() else std.heap.c_allocator;
-
-//     // While a connection can be created directly, pools should be used in most
-//     // cases. The pool's `acquire` method, to get a connection is thread-safe.
-//     // The pool may start 1 background thread to reconnect disconnected
-//     // connections (or connections in an invalid state).
-//     var pool = pg.Pool.init(allocator, .{ .size = 5, .connect = .{
-//         .port = 5432,
-//         .host = "127.0.0.1",
-//     }, .auth = .{
-//         .username = "postgres",
-//         .database = "postgres",
-//         .timeout = 10_000,
-//     } }) catch |err| {
-//         log.err("Failed to connect: {}", .{err});
-//         std.posix.exit(1);
-//     };
-//     defer pool.deinit();
-// }
