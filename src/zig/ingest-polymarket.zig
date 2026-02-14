@@ -16,23 +16,12 @@ const ParsedEvents = []pp.ParsedPolymarketEvent;
 
 const EVENTS_PER_CALL = 500;
 
-pub fn main() !void {
-    var main_timer = try std.time.Timer.start();
-    var api_timer: u64 = 0;
-    var parse_timer: u64 = 0;
-    var api_queries: u64 = 0;
-    var total_events: u64 = 0;
-    var total_markets: u64 = 0;
+const PRINT_PERF_DATA = false;
 
+pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
     defer _ = gpa.deinit();
-
-    // const datacenter_id = try std.fmt.parseInt(u16, std.os.getenv("DATACENTER_ID") orelse "0", 10);
-    // const worker_id = try std.fmt.parseInt(u16, std.os.getenv("WORKER_ID") orelse "0", 10);
-
-    var snow_flake_generator = try SnowFlakeGenerator.Snowflake.init(1, 1);
-
     //Get full active event list into memeory
     //TODO configManager based on config name
     const canonical_db_config = configs.CanonicalDBConfig{
@@ -53,23 +42,47 @@ pub fn main() !void {
     try canonicalDB.clearEventsTable();
     try canonicalDB.initEventsTable();
     try canonicalDB.initMarketsTable();
+    for (0..10) |_| {
+        try run(&canonicalDB);
+    }
+}
 
-    var marketsCache = try canonicalDB.getActiveMarketsFromDB(allocator);
+pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
+    var main_timer = try std.time.Timer.start();
+    var api_timer: u64 = 0;
+    var parse_timer: u64 = 0;
+    var api_queries: u64 = 0;
+    var total_events: u64 = 0;
+    var total_markets: u64 = 0;
+    var events_to_update_len: u64 = 0;
+    var events_to_create_len: u64 = 0;
+    var events_closed_len: u64 = 0;
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    defer _ = gpa.deinit();
+
+    // const datacenter_id = try std.fmt.parseInt(u16, std.os.getenv("DATACENTER_ID") orelse "0", 10);
+    // const worker_id = try std.fmt.parseInt(u16, std.os.getenv("WORKER_ID") orelse "0", 10);
+
+    var snow_flake_generator = try SnowFlakeGenerator.Snowflake.init(1, 1);
+
+    var markets_cache = try canonicalDB.getActiveMarketsFromDB(allocator);
     defer {
-        var iter = marketsCache.iterator();
+        var iter = markets_cache.iterator();
         while (iter.next()) |entry| {
             allocator.free(entry.key_ptr.*);
         }
-        marketsCache.deinit();
+        markets_cache.deinit();
     }
 
-    var eventsCache = try canonicalDB.getActiveEventsFromDB(allocator);
+    var events_cache = try canonicalDB.getActiveEventsFromDB(allocator);
     defer {
-        var iter = eventsCache.iterator();
+        var iter = events_cache.iterator();
         while (iter.next()) |entry| {
             allocator.free(entry.key_ptr.*);
         }
-        eventsCache.deinit();
+        events_cache.deinit();
     }
 
     var client = http.Client{ .allocator = allocator };
@@ -77,7 +90,6 @@ pub fn main() !void {
 
     var offset: u32 = 0;
 
-    //fetch raw -> find diffs -> write to db
     while (true) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
@@ -104,7 +116,7 @@ pub fn main() !void {
             const markets = event.markets;
             var event_id: u64 = 0;
             _ = try seen_events_set.put(event.id, 1);
-            if (eventsCache.get(event.id)) |cachedEvent| {
+            if (events_cache.get(event.id)) |cachedEvent| {
                 const pulled_event_hash = hashParsedEvent(&event);
                 const eventHashesDifferent = try hashesEqual(cachedEvent.data_hash, pulled_event_hash);
                 if (!eventHashesDifferent) {
@@ -122,7 +134,7 @@ pub fn main() !void {
 
             for (markets) |market| {
                 try seen_markets_set.put(market.id, 1);
-                if (marketsCache.get(market.id)) |cachedMarket| {
+                if (markets_cache.get(market.id)) |cachedMarket| {
                     const pulled_market_hash = hashParsedMarket(&market);
                     const marketHashesDifferent = try hashesEqual(cachedMarket.data_hash, pulled_market_hash);
                     if (!marketHashesDifferent) {
@@ -137,12 +149,33 @@ pub fn main() !void {
             }
         }
 
-        //TODO check if cache has events/markets that are not in the seen sets -> if so, need to update them as closed?
+        var events_closed = try ArrayList([]const u8).initCapacity(arena_alloc, EVENTS_PER_CALL);
+        var markets_closed = try ArrayList([]const u8).initCapacity(arena_alloc, EVENTS_PER_CALL);
 
-        // canonicalDB.updateEvents(canonical_events_to_update);
-        // canonicalDB.createEvents(canonical_events_to_create);
+        var events_cache_iter = events_cache.keyIterator();
+        while (events_cache_iter.next()) |event| {
+            if (!seen_events_set.contains(event.*)) {
+                try events_closed.append(arena_alloc, event.*);
+            }
+        }
+
+        var market_cache_iter = markets_cache.keyIterator();
+        while (market_cache_iter.next()) |market| {
+            if (!seen_markets_set.contains(market.*)) {
+                try markets_closed.append(arena_alloc, market.*);
+            }
+        }
+
+        events_closed_len += events_closed.items.len;
+        events_to_create_len += canonical_events_to_create.items.len;
+        events_to_update_len += canonical_events_to_update.items.len;
+
+        try canonicalDB.upsertEvents(canonical_events_to_update);
+        try canonicalDB.upsertEvents(canonical_events_to_create);
         // canonicalDB.updateMarkets(canonical_markets_to_update);
         // canonicalDB.createMarkets(canonical_markets_to_create);
+        // canonicalDB.closeEvents(events_closed);
+        // canonicalDB.closeMarkets(markets_closed);
 
         total_events += canonical_events_to_create.items.len;
         total_markets += canonical_markets_to_create.items.len;
@@ -153,25 +186,29 @@ pub fn main() !void {
         offset += EVENTS_PER_CALL;
 
         //TODO for testing remove
-        // if (offset > 10_000) {
-        //     break;
-        // }
+        if (offset >= 1_000) {
+            break;
+        }
 
         // break if events comeback as empty
-
         // or if the number of events is less than our limit
+
         const parse_end = main_timer.read();
         parse_timer += parse_end - parse_start;
     }
 
+    print("Events to Update ({d}) Create ({d}) Close ({d})\n", .{ events_to_update_len, events_to_create_len, events_closed_len });
+
     const api_ms = api_timer / 1_000_000;
     const parse_ms = parse_timer / 1_000_000;
-    print("API time: {d} ms\n", .{api_ms});
-    print("Parsing time: {d} ms\n", .{parse_ms});
-    print("API/Parse: {d} ms\n", .{api_ms / parse_ms});
-    print("ms per API Query: {d} ms\n", .{api_ms / api_queries});
-    print("TOTAL: {d} events | {d} markets\n", .{ total_events, total_markets });
-    print("Total time: {d} ms\n", .{main_timer.read() / 1_000_000});
+    if (PRINT_PERF_DATA) {
+        print("API time: {d} ms\n", .{api_ms});
+        print("Parsing time: {d} ms\n", .{parse_ms});
+        print("API/Parse: {d} ms\n", .{api_ms / parse_ms});
+        print("ms per API Query: {d} ms\n", .{api_ms / api_queries});
+        print("TOTAL: {d} events | {d} markets\n", .{ total_events, total_markets });
+        print("Total time: {d} ms\n", .{main_timer.read() / 1_000_000});
+    }
 }
 
 pub fn buildCanonicalMarketForCreate(
@@ -510,29 +547,3 @@ pub fn hashesEqual(hash_one: [32]u8, hash_two: [32]u8) !bool {
     }
     return true;
 }
-
-pub fn f() !void {}
-
-//A sample write to view data
-// const test_data =
-//     \\INSERT INTO canonical_events (
-//     \\        event_id, venue, venue_event_id, event_name, event_description,
-//     \\        event_type, event_category, event_tags, start_date, expiry_date,
-//     \\        status, data_hash
-//     \\    ) VALUES (
-//     \\        12345,
-//     \\        'polymarket',
-//     \\        'PM-001',
-//     \\        'Test Event',
-//     \\        'This is a test event for debugging',
-//     \\        'market',
-//     \\        'finance',
-//     \\        ARRAY['test', 'debug'],
-//     \\        now(),
-//     \\        now() + interval '7 days',
-//     \\        'active',
-//     \\        decode('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'hex')
-//     \\    )
-//     \\    ON CONFLICT (venue, venue_event_id) DO NOTHING;
-// ;
-// try canonicalDB.exec(test_data);
