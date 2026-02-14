@@ -38,10 +38,10 @@ pub fn main() !void {
     var canonicalDB = try cdb.CanonicalDB.init(allocator, canonical_db_config);
     defer canonicalDB.deinit();
 
-    try canonicalDB.clearMarketsTable();
-    try canonicalDB.clearEventsTable();
-    try canonicalDB.initEventsTable();
-    try canonicalDB.initMarketsTable();
+    // try canonicalDB.clearMarketsTable();
+    // try canonicalDB.clearEventsTable();
+    // try canonicalDB.initEventsTable();
+    // try canonicalDB.initMarketsTable();
     for (0..10) |_| {
         try run(&canonicalDB);
     }
@@ -84,6 +84,7 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
         }
         events_cache.deinit();
     }
+    print("Cached Events Pulled: {d}\n", .{events_cache.keyIterator().len});
 
     var client = http.Client{ .allocator = allocator };
     defer _ = client.deinit();
