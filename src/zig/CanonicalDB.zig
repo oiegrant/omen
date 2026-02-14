@@ -58,7 +58,7 @@ pub const CanonicalDB = struct {
             \\data_hash,
             \\created_at
             \\FROM canonical_events
-            \\WHERE venue = 'polymarket'
+            \\WHERE venue = 'POLYMARKET'
             \\AND status IN ('active', 'pending')
         ;
         var conn = try self.pool.acquire();
@@ -140,7 +140,7 @@ pub const CanonicalDB = struct {
                 \\  $9, $10, $11, $12,
                 \\  $13, $14
                 \\)
-                \\ON CONFLICT (event_id) DO UPDATE SET
+                \\ON CONFLICT (venue, venue_event_id) DO UPDATE SET
                 \\  venue = EXCLUDED.venue,
                 \\  venue_event_id = EXCLUDED.venue_event_id,
                 \\  event_name = EXCLUDED.event_name,
