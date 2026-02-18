@@ -2,7 +2,7 @@ const std = @import("std");
 pub const EventType = enum { BINARY, CATEGORICAL };
 pub const MarketType = enum { BINARY };
 pub const EventStatus = enum { ACTIVE, CLOSED };
-pub const MarketStatus = enum { PRE_OPEN, ACTIVE, PENDING_RESOLUTION, RESOLVED, CLOSED };
+pub const MarketStatus = enum { PRE_OPEN, ACTIVE, PENDING_RESOLUTION, RESOLVED };
 pub const VenueID = enum { POLYMARKET, KALSHI };
 pub const OrderSide = enum { BID, ASK };
 pub const OrderStatus = enum { OPEN, FILLED, PARTIAL, CANCELLED };
@@ -25,11 +25,48 @@ pub const CanonicalEvent = struct {
     expiry_date: i64,
     event_status: EventStatus,
     data_hash: [32]u8,
-    created_at: i64, //Internal
-    updated_at: i64, //Internal
+    created_at: i64,
+    updated_at: i64,
+
+    pub fn log(self: *const CanonicalEvent) void {
+        std.log.info(
+            \\CanonicalEvent{{
+            \\  venue_id={any}
+            \\  venue_event_id={s}
+            \\  event_id={d}
+            \\  event_name={s}
+            \\  event_description={s}
+            \\  event_type={any}
+            \\  event_category={s}
+            \\  event_tags={any}
+            \\  start_date={d}
+            \\  expiry_date={d}
+            \\  event_status={any}
+            \\  data_hash={x}
+            \\  created_at={d}
+            \\  updated_at={d}
+            \\}}
+        , .{
+            self.venue_id,
+            self.venue_event_id,
+            self.event_id,
+            self.event_name,
+            self.event_description,
+            self.event_type,
+            self.event_category,
+            self.event_tags,
+            self.start_date,
+            self.expiry_date,
+            self.event_status,
+            self.data_hash,
+            self.created_at,
+            self.updated_at,
+        });
+    }
 };
 
 pub const CanonicalMarket = struct {
+    venue_id: VenueID,
     venue_market_id: []const u8,
     event_id: u64,
     market_id: u64,
@@ -40,8 +77,8 @@ pub const CanonicalMarket = struct {
     market_status: MarketStatus,
     outcomes: []CanonicalOutcome,
     data_hash: [32]u8,
-    created_at: i64, //Internal
-    updated_at: i64, //Internal
+    created_at: i64,
+    updated_at: i64,
 };
 
 pub const CanonicalOutcome = struct {

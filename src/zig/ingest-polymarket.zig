@@ -16,7 +16,7 @@ const ParsedEvents = []pp.ParsedPolymarketEvent;
 
 const EVENTS_PER_CALL = 500;
 
-const PRINT_PERF_DATA = false;
+const PRINT_PERF_DATA = true;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -25,7 +25,7 @@ pub fn main() !void {
     //Get full active event list into memeory
     //TODO configManager based on config name
     const canonical_db_config = configs.CanonicalDBConfig{
-        .pool_size = 5,
+        .pool_size = 3,
         .port = 5432,
         .host = "127.0.0.1",
         .username = "postgres",
@@ -38,12 +38,13 @@ pub fn main() !void {
     var canonicalDB = try cdb.CanonicalDB.init(allocator, canonical_db_config);
     defer canonicalDB.deinit();
 
-    // try canonicalDB.clearMarketsTable();
-    // try canonicalDB.clearEventsTable();
-    // try canonicalDB.initEventsTable();
-    // try canonicalDB.initMarketsTable();
-    for (0..10) |_| {
+    try canonicalDB.clearMarketsTable();
+    try canonicalDB.clearEventsTable();
+    try canonicalDB.initEventsTable();
+    try canonicalDB.initMarketsTable();
+    for (0..20) |_| {
         try run(&canonicalDB);
+        std.Thread.sleep(5 * std.time.ns_per_s);
     }
 }
 
@@ -56,7 +57,8 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
     var total_markets: u64 = 0;
     var events_to_update_len: u64 = 0;
     var events_to_create_len: u64 = 0;
-    var events_closed_len: u64 = 0;
+    var markets_to_update_len: u64 = 0;
+    var markets_to_create_len: u64 = 0;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -84,12 +86,31 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
         }
         events_cache.deinit();
     }
-    print("Cached Events Pulled: {d}\n", .{events_cache.keyIterator().len});
+    print("Cached Events Pulled: {d}\n", .{events_cache.count()});
+    print("Cached Markets Pulled: {d}\n", .{markets_cache.count()});
 
     var client = http.Client{ .allocator = allocator };
     defer _ = client.deinit();
 
     var offset: u32 = 0;
+
+    //TODO create a hashset implementation
+    var seen_events_set = std.StringHashMap(u1).init(allocator);
+    defer seen_events_set.deinit();
+    defer {
+        var key_iter = seen_events_set.keyIterator();
+        while (key_iter.next()) |key| {
+            allocator.free(key.*);
+        }
+    }
+    var seen_markets_set = std.StringHashMap(u1).init(allocator);
+    defer seen_markets_set.deinit();
+    defer {
+        var key_iter = seen_markets_set.keyIterator();
+        while (key_iter.next()) |key| {
+            allocator.free(key.*);
+        }
+    }
 
     while (true) {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -97,7 +118,12 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
         const arena_alloc = arena.allocator();
 
         const api_start = main_timer.read();
-        const events: std.json.Parsed(ParsedEvents) = try fetchParsedForBatch(arena_alloc, &client, offset);
+        const events_opt = try fetchParsedForBatch(arena_alloc, &client, offset);
+        const events = events_opt orelse {
+            std.log.err("Error in fetching events", .{});
+            continue;
+        };
+
         const api_end = main_timer.read();
         api_timer += (api_end - api_start);
         api_queries += 1;
@@ -109,21 +135,17 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
         var canonical_markets_to_create = try ArrayList(canon.CanonicalMarket).initCapacity(arena_alloc, EVENTS_PER_CALL);
         var canonical_markets_to_update = try ArrayList(canon.CanonicalMarket).initCapacity(arena_alloc, EVENTS_PER_CALL);
 
-        //TODO create a hashset implementation
-        var seen_events_set = std.StringHashMap(u1).init(arena_alloc);
-        var seen_markets_set = std.StringHashMap(u1).init(arena_alloc);
-
         for (events.value) |event| {
             const markets = event.markets;
             var event_id: u64 = 0;
-            _ = try seen_events_set.put(event.id, 1);
+            const cp_event_id = try allocator.dupe(u8, event.id);
+            _ = try seen_events_set.put(cp_event_id, 1); //TODO GO fix memory leak here
+
             if (events_cache.get(event.id)) |cachedEvent| {
                 const pulled_event_hash = hashParsedEvent(&event);
-                const eventHashesDifferent = try hashesEqual(cachedEvent.data_hash, pulled_event_hash);
-                if (!eventHashesDifferent) {
-                    // event exists but needs an update
-                    event_id = cachedEvent.event_id;
-
+                const eventHashesEqual = try hashesEqual(cachedEvent.data_hash, pulled_event_hash);
+                event_id = cachedEvent.event_id;
+                if (!eventHashesEqual) {
                     try buildCanonicalEventForUpdate(arena_alloc, event, &canonical_events_to_update, pulled_event_hash, cachedEvent, markets.len);
                 }
             } else {
@@ -134,49 +156,38 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
             }
 
             for (markets) |market| {
-                try seen_markets_set.put(market.id, 1);
+                const cp_market_id = try allocator.dupe(u8, market.id);
+                // const market_closed: bool = market.closed;
+                try seen_markets_set.put(cp_market_id, 1);
                 if (markets_cache.get(market.id)) |cachedMarket| {
                     const pulled_market_hash = hashParsedMarket(&market);
-                    const marketHashesDifferent = try hashesEqual(cachedMarket.data_hash, pulled_market_hash);
-                    if (!marketHashesDifferent) {
-                        //market exists but needs an update
+                    const marketHashesEqual = try hashesEqual(cachedMarket.data_hash, pulled_market_hash);
+                    if (!marketHashesEqual) {
                         try buildCanonicalMarketForUpdate(arena_alloc, market, &canonical_markets_to_update, pulled_market_hash, cachedMarket, event_id);
                     }
-                } else {
-                    //handle new market
+                }
+                // else if (market_closed || std.mem.eql(u8, market.umaResolutionStatus, "resolved")) {
+                //     // Check db if it is already marked as resolved
+                //     // If it is, do nothing
+                //     // If it is not, add it to upsert queue
+                // }
+                else {
                     const new_id = try snow_flake_generator.nextId();
                     try buildCanonicalMarketForCreate(arena_alloc, market, &canonical_markets_to_create, new_id, event_id);
                 }
             }
         }
 
-        var events_closed = try ArrayList([]const u8).initCapacity(arena_alloc, EVENTS_PER_CALL);
-        var markets_closed = try ArrayList([]const u8).initCapacity(arena_alloc, EVENTS_PER_CALL);
-
-        var events_cache_iter = events_cache.keyIterator();
-        while (events_cache_iter.next()) |event| {
-            if (!seen_events_set.contains(event.*)) {
-                try events_closed.append(arena_alloc, event.*);
-            }
-        }
-
-        var market_cache_iter = markets_cache.keyIterator();
-        while (market_cache_iter.next()) |market| {
-            if (!seen_markets_set.contains(market.*)) {
-                try markets_closed.append(arena_alloc, market.*);
-            }
-        }
-
-        events_closed_len += events_closed.items.len;
         events_to_create_len += canonical_events_to_create.items.len;
         events_to_update_len += canonical_events_to_update.items.len;
+        markets_to_create_len += canonical_markets_to_create.items.len;
+        markets_to_update_len += canonical_markets_to_update.items.len;
 
         try canonicalDB.upsertEvents(canonical_events_to_update);
         try canonicalDB.upsertEvents(canonical_events_to_create);
-        // canonicalDB.updateMarkets(canonical_markets_to_update);
-        // canonicalDB.createMarkets(canonical_markets_to_create);
-        // canonicalDB.closeEvents(events_closed);
-        // canonicalDB.closeMarkets(markets_closed);
+
+        try canonicalDB.upsertMarkets(canonical_markets_to_update);
+        try canonicalDB.upsertMarkets(canonical_markets_to_create);
 
         total_events += canonical_events_to_create.items.len;
         total_markets += canonical_markets_to_create.items.len;
@@ -187,7 +198,7 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
         offset += EVENTS_PER_CALL;
 
         //TODO for testing remove
-        if (offset >= 1_000) {
+        if (offset >= 10_000) {
             break;
         }
 
@@ -196,9 +207,32 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
 
         const parse_end = main_timer.read();
         parse_timer += parse_end - parse_start;
+    } //END WHILE
+
+    var events_closed = try ArrayList([]const u8).initCapacity(allocator, EVENTS_PER_CALL);
+    defer events_closed.deinit(allocator);
+    var markets_closed = try ArrayList([]const u8).initCapacity(allocator, EVENTS_PER_CALL);
+    defer markets_closed.deinit(allocator);
+
+    var events_cache_iter = events_cache.keyIterator();
+    while (events_cache_iter.next()) |event| {
+        if (!seen_events_set.contains(event.*)) {
+            try events_closed.append(allocator, event.*);
+        }
     }
 
-    print("Events to Update ({d}) Create ({d}) Close ({d})\n", .{ events_to_update_len, events_to_create_len, events_closed_len });
+    var market_cache_iter = markets_cache.keyIterator();
+    while (market_cache_iter.next()) |market| {
+        if (!seen_markets_set.contains(market.*)) {
+            try markets_closed.append(allocator, market.*);
+        }
+    }
+
+    // canonicalDB.closeEvents(events_closed);
+    // canonicalDB.closeMarkets(markets_closed);
+
+    print("Events to Update ({d}) Create ({d}) Close ({d})\n", .{ events_to_update_len, events_to_create_len, events_closed.items.len });
+    print("Markets to Update ({d}) Create ({d}) Close ({d})\n", .{ markets_to_update_len, markets_to_create_len, markets_closed.items.len });
 
     const api_ms = api_timer / 1_000_000;
     const parse_ms = parse_timer / 1_000_000;
@@ -209,6 +243,23 @@ pub fn run(canonicalDB: *cdb.CanonicalDB) !void {
         print("ms per API Query: {d} ms\n", .{api_ms / api_queries});
         print("TOTAL: {d} events | {d} markets\n", .{ total_events, total_markets });
         print("Total time: {d} ms\n", .{main_timer.read() / 1_000_000});
+    }
+}
+
+pub fn debugCheckDuplicateVenueEventIds(events: ArrayList(canon.CanonicalEvent)) void {
+    for (events.items, 0..) |event_a, i| {
+        for (events.items, 0..) |event_b, j| {
+            if (i == j) continue;
+            if (std.mem.eql(u8, event_a.venue_event_id, event_b.venue_event_id)) {
+                std.log.err("DUPLICATE venue_event_id found: {s} at index {d} (event_id={d}) and index {d} (event_id={d})", .{
+                    event_a.venue_event_id,
+                    i,
+                    event_a.event_id,
+                    j,
+                    event_b.event_id,
+                });
+            }
+        }
     }
 }
 
@@ -229,6 +280,7 @@ pub fn buildCanonicalMarketForCreate(
         new_id,
         parent_event_id,
     );
+
     try canonical_markets.append(arena_alloc, temp_market);
 }
 
@@ -345,13 +397,14 @@ pub fn buildCanonicalMarket(
     const start_date = try DateTime.ISO_8601_UTC_To_TimestampMs(market.startDate);
     const expiry_date = try DateTime.ISO_8601_UTC_To_TimestampMs(market.endDate);
 
-    const status = try determineMarketStatus(arena_alloc, start_date, expiry_date, market);
+    const status = try determineMarketStatus(arena_alloc, start_date, market);
 
     const market_type = canon.MarketType.BINARY;
 
     const outcomes = try parseOutcomes(arena_alloc, market.outcomes, market.clobTokenIds, internal_id);
 
     return canon.CanonicalMarket{
+        .venue_id = canon.VenueID.POLYMARKET,
         .event_id = parent_event_id,
         .venue_market_id = market.id,
         .market_id = internal_id,
@@ -370,20 +423,19 @@ pub fn buildCanonicalMarket(
 pub fn determineMarketStatus(
     arena_alloc: std.mem.Allocator,
     start_date_ts: i64,
-    expiry_date_ts: i64,
     market: pp.ParsedPolymarketMarket,
 ) !canon.MarketStatus {
-    if (std.mem.eql(u8, market.umaResolutionStatus, "resolved")) {
-        return .RESOLVED;
-    }
-
     if (std.time.milliTimestamp() < start_date_ts) {
         return .PRE_OPEN;
     }
 
-    if (market.closed or std.time.milliTimestamp() > expiry_date_ts) {
-        return .CLOSED;
+    // if (market_closed || std.mem.eql(u8, market.umaResolutionStatus, "resolved")) {
+    //     return .RESOLVED;
+    // }
+    if (market.closed) {
+        return .RESOLVED;
     }
+
     const resolutionStates = try parseJsonStringArray(arena_alloc, market.umaResolutionStatuses);
 
     if (resolutionStates.len > 0) {
@@ -393,7 +445,7 @@ pub fn determineMarketStatus(
     return .ACTIVE;
 }
 
-pub fn fetchParsedForBatch(allocator: std.mem.Allocator, client: *http.Client, offset: u32) !std.json.Parsed(ParsedEvents) {
+pub fn fetchParsedForBatch(allocator: std.mem.Allocator, client: *http.Client, offset: u32) !?std.json.Parsed(ParsedEvents) {
     var builder: qb.QueryBuilder = qb.QueryBuilder.init(allocator);
     defer builder.deinit();
 
@@ -410,10 +462,13 @@ pub fn fetchParsedForBatch(allocator: std.mem.Allocator, client: *http.Client, o
     defer allocator.free(builturl);
     // print("URL = {s}\n", .{builturl});
     const uri = try std.Uri.parse(builturl);
-    var request = try client.fetch(.{
+    var request = client.fetch(.{
         .location = .{ .uri = uri },
         .response_writer = &result_body.writer,
-    });
+    }) catch |err| {
+        std.log.err("Failed to fetch: {any}", .{err});
+        return null;
+    };
     if (request.status.class() != .success) {
         print("request failed: {?s}", .{request.status.phrase()});
     }
