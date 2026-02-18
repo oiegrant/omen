@@ -7,6 +7,7 @@ VALUES
   (...)
 ON CONFLICT DO NOTHING;
 
+
 Bulk update (only changed rows)
 UPDATE events
 SET
